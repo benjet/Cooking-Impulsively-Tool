@@ -8,5 +8,6 @@ data/*.db-journal
 data/*.db-shm
 data/*.db-wal
 .claude/
+.npm-cache/
 *.tsbuildinfo
 next-env.d.ts

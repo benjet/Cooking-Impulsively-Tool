@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ListEditor } from "@/components/IngredientEditor";
+import { detectStovetopSteps } from "@/lib/recipeAnalysis";
 import {
   EXPERIENCE,
   GOALS,
@@ -31,6 +32,8 @@ export default function NewCardPage() {
     yieldText: null,
     ingredients: [""],
     instructions: [""],
+    detectedStovetopSteps: [false],
+    extractionConfidence: 0.3,
   });
 
   const [panType, setPanType] = useState<PanType>(PAN_TYPES[0]);
@@ -55,7 +58,11 @@ export default function NewCardPage() {
             : "Couldn't fetch that URL. Check the link or paste manually."
         );
         setManual(true);
-        setRecipe((r) => ({ ...r, sourceUrl: url || null }));
+        setRecipe((r) => ({
+          ...r,
+          sourceUrl: url || null,
+          extractionConfidence: 0.3,
+        }));
         setStage("confirm");
         return;
       }
@@ -66,7 +73,11 @@ export default function NewCardPage() {
     } catch {
       setError("Network error. Try again or paste manually.");
       setManual(true);
-      setRecipe((r) => ({ ...r, sourceUrl: url || null }));
+      setRecipe((r) => ({
+        ...r,
+        sourceUrl: url || null,
+        extractionConfidence: 0.3,
+      }));
       setStage("confirm");
     } finally {
       setBusy(false);
@@ -82,19 +93,37 @@ export default function NewCardPage() {
       yieldText: null,
       ingredients: [""],
       instructions: [""],
+      detectedStovetopSteps: [false],
+      extractionConfidence: 0.3,
     });
     setStage("confirm");
+  }
+
+  function updateInstructions(instructions: string[]) {
+    setRecipe({
+      ...recipe,
+      instructions,
+      detectedStovetopSteps: detectStovetopSteps(instructions),
+    });
   }
 
   async function handleGenerate() {
     setBusy(true);
     setError(null);
     try {
+      const ingredients = recipe.ingredients
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const instructions = recipe.instructions
+        .map((s) => s.trim())
+        .filter(Boolean);
       const cleaned: ExtractedRecipe = {
         ...recipe,
         title: recipe.title.trim(),
-        ingredients: recipe.ingredients.map((s) => s.trim()).filter(Boolean),
-        instructions: recipe.instructions.map((s) => s.trim()).filter(Boolean),
+        ingredients,
+        instructions,
+        detectedStovetopSteps: detectStovetopSteps(instructions),
+        extractionConfidence: recipe.extractionConfidence,
       };
       if (!cleaned.title) {
         setError("Please add a title.");
@@ -179,6 +208,12 @@ export default function NewCardPage() {
             {manual ? "Paste recipe details" : "Confirm what we found"}
           </h1>
           {error && <ErrorBox>{error}</ErrorBox>}
+          {recipe.extractionConfidence < 0.7 && (
+            <div className="rounded border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-sm">
+              Extraction confidence is low. Review the ingredients and steps
+              before generating the card.
+            </div>
+          )}
           <div className="grid md:grid-cols-2 gap-4">
             <Field label="Title">
               <input
@@ -228,10 +263,16 @@ export default function NewCardPage() {
 
           <ListEditor
             items={recipe.instructions}
-            onChange={(v) => setRecipe({ ...recipe, instructions: v })}
+            onChange={updateInstructions}
             label="Instructions"
             placeholder="e.g. Heat the pan over medium-high heat…"
           />
+
+          <div className="text-sm text-stone-500">
+            {recipe.detectedStovetopSteps.filter(Boolean).length} of{" "}
+            {recipe.instructions.filter((s) => s.trim()).length} steps look
+            stovetop-related.
+          </div>
 
           <div className="flex justify-between pt-2">
             <button

@@ -1,11 +1,11 @@
-# Engineering Spec: Prompt + Admin Schema
+# Engineering Spec: Prompt, Rendering, Evals, and Admin Schema
 
-This document covers the two load-bearing systems for Stage 3 and Stage 4:
+This document covers the four load-bearing systems for Stage 3 and Stage 4:
 
 - **Section D — Prompt engineering** for the recipe-analysis LLM. Upstream dependency: if the model doesn't emit clean tokens, nothing downstream works.
 - **Section E — Admin queue database schema** in PostgreSQL. Downstream: the reconciliation surface that turns structured feedback into rule changes.
-
-The rendering layer (toggle UX, conversion math) is comparatively trivial once these are sound.
+- **Section F — Rendering layer** for token-based templates, unit conversion, and the unit toggle UX.
+- **Section G — Eval harness** for schema, structural, and cooking-regression checks.
 
 > Note: this doc references "Section C" (outlier handling, cross-recipe pattern detection, user calibration) in places. Section C lives in the design notes that preceded this engineering write-up and is captured in the [admin reconciliation workflow](https://github.com/benjet/Cooking-Impulsively-Tool/issues) — read the dangling refs as forward links into the admin queue spec in Section E.
 
@@ -1229,10 +1229,1103 @@ The schema is roughly 9 tables, ~200 lines of SQL, and should handle the first f
 
 ## Where to go from here
 
-These two sections give you the upstream (AI emits clean tokens) and the downstream (admin reconciles structured feedback) of the system. The middle — the rendering layer, the conversion math, the toggle UX — is comparatively trivial once these are sound.
+These sections give you the upstream (AI emits clean tokens), the middle (the rendering layer consumes them cleanly), the guardrails (evals catch drift), and the downstream (admin reconciles structured feedback) of the system.
 
 Three things worth deciding before you start building:
 
 1. **Eval set first.** Don't write a single line of token-emission code until you have 30 recipes with success criteria defined. The prompt will need 5–10 iterations to hit acceptable accuracy, and you need a way to measure regression.
 2. **Decide on the cache key.** Cards generated for `(recipe_id, pan_type, experience_level, cooking_goal)` should be cached. But what about minor variations? Do "comfortable" and "nerd_mode" share a generation? My recommendation: yes, generate once at the highest detail level and degrade in the UI for less-experienced users. Cheaper and more consistent.
 3. **Plan for prompt versioning.** Every generated card should record which prompt version produced it. When you update the prompt and the model behavior shifts, you need to know which cards came from which version. Add a `prompt_version` field to `adaptation_cards` and store the actual prompt template alongside.
+
+## Recommended implementation order
+
+The build should move from the surface users touch toward the systems that protect it from drift:
+
+1. **Make the card trustworthy first.** The product value is the rendered adaptation card: per-step notes, unit switching, food-safety guidance, confidence language, and clear source attribution. Treat this as the center of the system.
+2. **Implement the rendering layer before the real LLM.** Build `UnitProvider`, `temperature.ts`, `NarrativeText`, `UnitToggle`, and the feedback conversion preview while the generator is still deterministic. Then refactor the existing heuristic generator to emit `narrative_template + temps`.
+3. **Add the eval harness before prompt iteration.** Start with a smaller 5-10 recipe corpus, but include schema validation, token-resolution checks, no-inline-temperature checks, food-safety checks, and copied-prose checks from day one.
+4. **Replace the LLM stub only after rendering and evals exist.** Keep the `generateAdaptation(recipe, context)` interface stable and keep a local deterministic fallback when API keys are absent.
+5. **Normalize data after the card schema is stable.** The database split in Section E is important, but doing it before the output shape settles risks migrating into the wrong structure.
+6. **Improve the user flow where it reduces cooking mistakes.** Prioritize extraction-confidence warnings, visible stovetop-step detection, step-specific feedback, and the temperature conversion preview.
+
+This sequence deliberately delays the database migration until the card contract is proven. The expensive mistake is not changing tables later; it is locking in a schema before the user-facing output and feedback loop have stabilized.
+
+---
+
+# F. Rendering Layer: React Patterns for Token-Based Templates
+
+## F.1 Architecture overview
+
+The rendering layer has three jobs:
+
+1. Parse a `narrative_template` and resolve `{{temp_n}}` tokens against the `temps` dictionary.
+2. Format each temperature according to its kind, precision, and `force_both_units` settings, in the user's current unit preference.
+3. React to unit-toggle changes without re-fetching data or re-generating the card.
+
+The architecture is a single source of truth: the user's unit preference lives in React context and feeds a pure rendering function called by every component that displays temperatures. No prop drilling, no duplicated formatters, and no synchronized local state.
+
+## F.2 The unit context
+
+A single React context manages the user's unit preference and provides the toggle handler. Every temperature-displaying component subscribes to it.
+
+```tsx
+// src/contexts/UnitContext.tsx
+import {
+  createContext,
+  useContext,
+  useState,
+  type ReactNode,
+} from "react";
+
+export type TempUnit = "F" | "C";
+
+interface UnitContextValue {
+  unit: TempUnit;
+  setUnit: (unit: TempUnit) => void;
+  toggle: () => void;
+  isExplicit: boolean;
+}
+
+const UnitContext = createContext<UnitContextValue | null>(null);
+
+interface UnitProviderProps {
+  children: ReactNode;
+  initialUnit?: TempUnit;
+  userId?: string;
+  onUnitChange?: (unit: TempUnit) => void;
+}
+
+export function UnitProvider({
+  children,
+  initialUnit,
+  onUnitChange,
+}: UnitProviderProps) {
+  const [unit, setUnitState] = useState<TempUnit>(() => {
+    if (initialUnit) return initialUnit;
+    return detectInitialUnit();
+  });
+  const [isExplicit, setIsExplicit] = useState(false);
+
+  const setUnit = (next: TempUnit) => {
+    setUnitState(next);
+    setIsExplicit(true);
+    localStorage.setItem("temp_unit", next);
+    onUnitChange?.(next);
+  };
+
+  const toggle = () => setUnit(unit === "F" ? "C" : "F");
+
+  return (
+    <UnitContext.Provider value={{ unit, setUnit, toggle, isExplicit }}>
+      {children}
+    </UnitContext.Provider>
+  );
+}
+
+export function useUnit() {
+  const ctx = useContext(UnitContext);
+  if (!ctx) throw new Error("useUnit must be used within a UnitProvider");
+  return ctx;
+}
+
+function detectInitialUnit(): TempUnit {
+  const stored = localStorage.getItem("temp_unit");
+  if (stored === "F" || stored === "C") return stored;
+
+  const lang = navigator.language || "en-US";
+  const region = lang.split("-")[1]?.toUpperCase();
+  const fahrenheitRegions = new Set(["US", "LR", "BS", "BZ", "KY", "PW"]);
+
+  if (region && fahrenheitRegions.has(region)) return "F";
+  if (region) return "C";
+  return "F";
+}
+```
+
+Three things worth noting:
+
+1. `isExplicit` lets the UI distinguish users who chose a unit from users who received a locale default.
+2. Server-side detection happens before the provider mounts. If the server passes `initialUnit`, it overrides client detection.
+3. `onUnitChange` is the persistence escape hatch. Authenticated users can persist to `user.preferred_temp_unit`; anonymous users can rely on `localStorage`.
+
+## F.3 The conversion utilities
+
+Pure functions, no React, fully testable.
+
+```ts
+// src/lib/temperature.ts
+export interface TemperatureObject {
+  f: number;
+  f_max?: number;
+  kind: "point" | "range" | "threshold" | "safety";
+  precision: "whole" | "decimal_1" | "decimal_2";
+  context: string;
+  force_both_units?: boolean;
+}
+
+export type TempUnit = "F" | "C";
+
+export function fToC(f: number): number {
+  return (f - 32) / 1.8;
+}
+
+export function cToF(c: number): number {
+  return c * 1.8 + 32;
+}
+
+export function formatTemp(
+  value: number,
+  unit: TempUnit,
+  precision: TemperatureObject["precision"]
+): string {
+  switch (precision) {
+    case "whole":
+      return `${Math.round(value)}°${unit}`;
+    case "decimal_1":
+      return `${value.toFixed(1)}°${unit}`;
+    case "decimal_2":
+      return `${value.toFixed(2)}°${unit}`;
+  }
+}
+
+export interface RenderOptions {
+  unit: TempUnit;
+  nerdMode?: boolean;
+}
+
+export function renderTemperature(
+  temp: TemperatureObject,
+  opts: RenderOptions
+): string {
+  const showBoth = temp.force_both_units || opts.nerdMode;
+  const fStr = formatTemp(temp.f, "F", temp.precision);
+  const cStr = formatTemp(fToC(temp.f), "C", temp.precision);
+
+  if (temp.kind === "range" && temp.f_max !== undefined) {
+    const fMaxStr = formatTemp(temp.f_max, "F", temp.precision);
+    const cMaxStr = formatTemp(fToC(temp.f_max), "C", temp.precision);
+
+    if (showBoth) {
+      return opts.unit === "F"
+        ? `${fStr} to ${fMaxStr} (${cStr} to ${cMaxStr})`
+        : `${cStr} to ${cMaxStr} (${fStr} to ${fMaxStr})`;
+    }
+
+    return opts.unit === "F"
+      ? `${fStr} to ${fMaxStr}`
+      : `${cStr} to ${cMaxStr}`;
+  }
+
+  if (showBoth) {
+    return opts.unit === "F" ? `${fStr} (${cStr})` : `${cStr} (${fStr})`;
+  }
+
+  return opts.unit === "F" ? fStr : cStr;
+}
+```
+
+These functions are the entire conversion math. Everything downstream is presentation.
+
+## F.4 The narrative renderer
+
+The narrative renderer takes a `narrative_template` plus a `temps` dictionary and produces rendered output.
+
+```tsx
+// src/components/NarrativeText.tsx
+import { useMemo, type ReactNode } from "react";
+import { useUnit } from "@/contexts/UnitContext";
+import { renderTemperature, type TemperatureObject } from "@/lib/temperature";
+
+interface NarrativeTextProps {
+  template: string;
+  temps: Record<string, TemperatureObject>;
+  nerdMode?: boolean;
+  className?: string;
+}
+
+const TOKEN_REGEX = /\{\{(temp_[a-z0-9_]+)\}\}/g;
+
+export function NarrativeText({
+  template,
+  temps,
+  nerdMode = false,
+  className,
+}: NarrativeTextProps) {
+  const { unit } = useUnit();
+
+  const rendered = useMemo<ReactNode[]>(() => {
+    const parts: ReactNode[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    TOKEN_REGEX.lastIndex = 0;
+
+    while ((match = TOKEN_REGEX.exec(template)) !== null) {
+      const [fullMatch, tokenKey] = match;
+      const start = match.index;
+      const end = start + fullMatch.length;
+
+      if (start > lastIndex) {
+        parts.push(template.slice(lastIndex, start));
+      }
+
+      const tempObj = temps[tokenKey];
+      if (tempObj) {
+        parts.push(
+          <TemperatureSpan key={`${tokenKey}-${start}`} temp={tempObj}>
+            {renderTemperature(tempObj, { unit, nerdMode })}
+          </TemperatureSpan>
+        );
+      } else {
+        console.error(`Missing temperature token: ${tokenKey}`);
+        parts.push(
+          <span key={`missing-${start}`} className="text-red-500">
+            {fullMatch}
+          </span>
+        );
+      }
+
+      lastIndex = end;
+    }
+
+    if (lastIndex < template.length) {
+      parts.push(template.slice(lastIndex));
+    }
+
+    return parts;
+  }, [template, temps, unit, nerdMode]);
+
+  return <span className={className}>{rendered}</span>;
+}
+
+function TemperatureSpan({
+  temp,
+  children,
+}: {
+  temp: TemperatureObject;
+  children: ReactNode;
+}) {
+  const label =
+    temp.kind === "safety"
+      ? `Food safety temperature: ${temp.context}`
+      : `Temperature: ${temp.context}`;
+
+  return (
+    <span
+      className={`temp-token temp-${temp.kind}`}
+      aria-label={label}
+      data-context={temp.context}
+    >
+      {children}
+    </span>
+  );
+}
+```
+
+Wrapping each temperature in `TemperatureSpan` gives you accessibility labels, differential styling for safety temperatures, click-to-copy hooks in nerd mode, and analytics hooks for hover/copy behavior.
+
+## F.5 The card components
+
+The full cooking card composes the narrative renderer at several levels: summary, per-step notes, and food safety.
+
+```tsx
+// src/components/CookingCard.tsx
+import { NarrativeText } from "./NarrativeText";
+import { UnitToggle } from "./UnitToggle";
+import type { TemperatureObject } from "@/lib/temperature";
+
+interface AdaptationStep {
+  step_id: string;
+  original_step_number: number;
+  detected_intent: string;
+  technique_category: string;
+  ingredient_focus: string;
+  impulse_mode: "temperature_control" | "power_mode" | "either";
+  narrative_template: string;
+  temps: Record<string, TemperatureObject>;
+  sensory_cues: string[];
+  risk_notes?: string;
+  confidence_level: "high" | "medium" | "low";
+}
+
+interface AdaptationCard {
+  card_id: string;
+  recipe_title: string;
+  source_url: string;
+  source_domain: string;
+  pan_type: string;
+  confidence_level: "high" | "medium" | "low";
+  summary: {
+    dish_name: string;
+    mode_strategy: string;
+    key_risks: string[];
+    narrative_template: string;
+    temps: Record<string, TemperatureObject>;
+  };
+  steps: AdaptationStep[];
+  food_safety: {
+    applicable: boolean;
+    narrative_template?: string;
+    temps?: Record<string, TemperatureObject>;
+  };
+  nerd_mode: boolean;
+}
+
+export function CookingCard({ card }: { card: AdaptationCard }) {
+  return (
+    <article className="cooking-card">
+      <header className="card-header">
+        <h1>{card.recipe_title}</h1>
+        <div className="card-meta">
+          <a href={card.source_url} target="_blank" rel="noopener noreferrer">
+            Original recipe at {card.source_domain}
+          </a>
+          <UnitToggle />
+        </div>
+      </header>
+
+      <section className="card-summary">
+        <h2>Strategy</h2>
+        <p>
+          <NarrativeText
+            template={card.summary.narrative_template}
+            temps={card.summary.temps}
+            nerdMode={card.nerd_mode}
+          />
+        </p>
+        <ConfidenceBadge level={card.confidence_level} />
+      </section>
+
+      <section className="card-steps">
+        <h2>Step-by-step</h2>
+        {card.steps.map((step) => (
+          <StepCard key={step.step_id} step={step} nerdMode={card.nerd_mode} />
+        ))}
+      </section>
+
+      {card.food_safety.applicable && (
+        <FoodSafetySection
+          template={card.food_safety.narrative_template!}
+          temps={card.food_safety.temps!}
+        />
+      )}
+    </article>
+  );
+}
+
+function StepCard({
+  step,
+  nerdMode,
+}: {
+  step: AdaptationStep;
+  nerdMode: boolean;
+}) {
+  return (
+    <div className={`step-card confidence-${step.confidence_level}`}>
+      <header>
+        <span className="step-number">Step {step.original_step_number}</span>
+        <span className="step-intent">{step.detected_intent}</span>
+      </header>
+
+      <ImpulseModeBadge mode={step.impulse_mode} />
+
+      <p className="step-narrative">
+        <NarrativeText
+          template={step.narrative_template}
+          temps={step.temps}
+          nerdMode={nerdMode}
+        />
+      </p>
+
+      <ul className="step-cues">
+        {step.sensory_cues.map((cue, i) => (
+          <li key={i}>{cue}</li>
+        ))}
+      </ul>
+
+      {step.risk_notes && (
+        <aside className="step-risk">
+          <strong>Watch out:</strong> {step.risk_notes}
+        </aside>
+      )}
+    </div>
+  );
+}
+
+function FoodSafetySection({
+  template,
+  temps,
+}: {
+  template: string;
+  temps: Record<string, TemperatureObject>;
+}) {
+  return (
+    <section className="food-safety">
+      <h2>Food safety</h2>
+      <p>
+        <NarrativeText template={template} temps={temps} nerdMode={true} />
+      </p>
+    </section>
+  );
+}
+
+function ConfidenceBadge({ level }: { level: "high" | "medium" | "low" }) {
+  const labels = {
+    high: "High confidence",
+    medium: "Medium confidence",
+    low: "Low confidence — adjust by feel",
+  };
+  return <span className={`confidence-badge confidence-${level}`}>{labels[level]}</span>;
+}
+
+function ImpulseModeBadge({
+  mode,
+}: {
+  mode: "temperature_control" | "power_mode" | "either";
+}) {
+  const labels = {
+    temperature_control: "Temperature Control",
+    power_mode: "Power Mode",
+    either: "Either mode",
+  };
+  return <span className={`mode-badge mode-${mode}`}>{labels[mode]}</span>;
+}
+```
+
+`FoodSafetySection` hardcodes `nerdMode={true}`. That implements the product rule that food safety always shows both units, regardless of user preference.
+
+## F.6 The unit toggle component
+
+```tsx
+// src/components/UnitToggle.tsx
+import { useUnit } from "@/contexts/UnitContext";
+
+export function UnitToggle({ className }: { className?: string }) {
+  const { unit, setUnit } = useUnit();
+
+  return (
+    <div
+      className={`unit-toggle ${className ?? ""}`}
+      role="group"
+      aria-label="Temperature unit"
+    >
+      <button
+        type="button"
+        className={`unit-toggle-button ${unit === "F" ? "active" : ""}`}
+        onClick={() => setUnit("F")}
+        aria-pressed={unit === "F"}
+      >
+        °F
+      </button>
+      <button
+        type="button"
+        className={`unit-toggle-button ${unit === "C" ? "active" : ""}`}
+        onClick={() => setUnit("C")}
+        aria-pressed={unit === "C"}
+      >
+        °C
+      </button>
+    </div>
+  );
+}
+```
+
+Use two buttons rather than a checkbox or switch because the options are equally weighted after the user chooses, `aria-pressed` makes the active state clear, and the control maps to how cooks think: "I want Celsius" or "I want Fahrenheit."
+
+## F.7 The feedback form
+
+The feedback form needs careful handling because the user is reporting a temperature they used, and that unit may differ from their display preference.
+
+```tsx
+// src/components/FeedbackForm.tsx
+import { useState } from "react";
+import { useUnit } from "@/contexts/UnitContext";
+import { cToF, fToC } from "@/lib/temperature";
+
+interface FeedbackPayload {
+  card_id: string;
+  step_id?: string;
+  overall_rating: "worked_well" | "mixed" | "did_not_work";
+  feedback_tags: string[];
+  actual_temp_input?: number;
+  actual_temp_unit?: "F" | "C";
+  actual_temp_f?: number;
+  actual_temp_c?: number;
+  actual_pan_type?: string;
+  notes?: string;
+}
+
+export function FeedbackForm({
+  cardId,
+  stepId,
+  onSubmit,
+}: {
+  cardId: string;
+  stepId?: string;
+  onSubmit: (feedback: FeedbackPayload) => Promise<void>;
+}) {
+  const { unit: displayUnit } = useUnit();
+  const [overallRating, setOverallRating] =
+    useState<FeedbackPayload["overall_rating"]>("worked_well");
+  const [tags, setTags] = useState<string[]>([]);
+  const [actualTempInput, setActualTempInput] = useState("");
+  const [actualTempUnit, setActualTempUnit] = useState<"F" | "C">(displayUnit);
+  const [actualPanType, setActualPanType] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const payload: FeedbackPayload = {
+      card_id: cardId,
+      step_id: stepId,
+      overall_rating: overallRating,
+      feedback_tags: tags,
+      actual_pan_type: actualPanType || undefined,
+      notes: notes || undefined,
+    };
+
+    if (actualTempInput) {
+      const inputValue = parseFloat(actualTempInput);
+      if (!Number.isNaN(inputValue)) {
+        payload.actual_temp_input = inputValue;
+        payload.actual_temp_unit = actualTempUnit;
+
+        if (actualTempUnit === "F") {
+          payload.actual_temp_f = inputValue;
+          payload.actual_temp_c = fToC(inputValue);
+        } else {
+          payload.actual_temp_c = inputValue;
+          payload.actual_temp_f = cToF(inputValue);
+        }
+      }
+    }
+
+    await onSubmit(payload);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="feedback-form">
+      <fieldset>
+        <legend>What temperature worked best?</legend>
+        <div className="temp-input-group">
+          <input
+            type="number"
+            step="1"
+            value={actualTempInput}
+            onChange={(e) => setActualTempInput(e.target.value)}
+            placeholder={`e.g., ${actualTempUnit === "F" ? "325" : "163"}`}
+            aria-label={`Actual temperature in degrees ${actualTempUnit}`}
+          />
+          <select
+            value={actualTempUnit}
+            onChange={(e) => setActualTempUnit(e.target.value as "F" | "C")}
+            aria-label="Temperature unit for this entry"
+          >
+            <option value="F">°F</option>
+            <option value="C">°C</option>
+          </select>
+        </div>
+        {actualTempInput && (
+          <p className="conversion-preview">
+            Recording: {actualTempInput}°{actualTempUnit}
+            {actualTempUnit === "F"
+              ? ` (${Math.round(fToC(parseFloat(actualTempInput)))}°C)`
+              : ` (${Math.round(cToF(parseFloat(actualTempInput)))}°F)`}
+          </p>
+        )}
+      </fieldset>
+
+      <button type="submit">Submit feedback</button>
+    </form>
+  );
+}
+```
+
+The conversion preview is the safeguard. A user who types `163` with the Celsius selector immediately sees `(325°F)` and can catch a unit mistake before submitting.
+
+## F.8 Test patterns
+
+Pure functions are tested directly. Components are tested with the unit context wrapper.
+
+```ts
+// src/lib/temperature.test.ts
+import { cToF, fToC, renderTemperature } from "./temperature";
+
+describe("temperature conversion", () => {
+  it("converts F to C correctly", () => {
+    expect(fToC(212)).toBeCloseTo(100, 5);
+    expect(fToC(32)).toBeCloseTo(0, 5);
+    expect(fToC(335)).toBeCloseTo(168.33, 2);
+  });
+
+  it("converts C to F correctly", () => {
+    expect(cToF(100)).toBeCloseTo(212, 5);
+    expect(cToF(0)).toBeCloseTo(32, 5);
+    expect(cToF(168)).toBeCloseTo(334.4, 2);
+  });
+});
+
+describe("renderTemperature", () => {
+  it("renders a point temperature in Fahrenheit", () => {
+    const temp = {
+      f: 335,
+      kind: "point" as const,
+      precision: "whole" as const,
+      context: "test",
+    };
+    expect(renderTemperature(temp, { unit: "F" })).toBe("335°F");
+  });
+
+  it("renders a point temperature in Celsius", () => {
+    const temp = {
+      f: 335,
+      kind: "point" as const,
+      precision: "whole" as const,
+      context: "test",
+    };
+    expect(renderTemperature(temp, { unit: "C" })).toBe("168°C");
+  });
+
+  it("renders a range with both endpoints converted", () => {
+    const temp = {
+      f: 330,
+      f_max: 350,
+      kind: "range" as const,
+      precision: "whole" as const,
+      context: "test",
+    };
+    expect(renderTemperature(temp, { unit: "F" })).toBe("330°F to 350°F");
+    expect(renderTemperature(temp, { unit: "C" })).toBe("166°C to 177°C");
+  });
+
+  it("forces both units for safety temps", () => {
+    const temp = {
+      f: 165,
+      kind: "safety" as const,
+      precision: "whole" as const,
+      context: "internal_poultry",
+      force_both_units: true,
+    };
+    expect(renderTemperature(temp, { unit: "F" })).toBe("165°F (74°C)");
+    expect(renderTemperature(temp, { unit: "C" })).toBe("74°C (165°F)");
+  });
+
+  it("shows both units in nerd mode for non-safety temps", () => {
+    const temp = {
+      f: 335,
+      kind: "point" as const,
+      precision: "whole" as const,
+      context: "test",
+    };
+    expect(renderTemperature(temp, { unit: "F", nerdMode: true })).toBe(
+      "335°F (168°C)"
+    );
+    expect(renderTemperature(temp, { unit: "C", nerdMode: true })).toBe(
+      "168°C (335°F)"
+    );
+  });
+
+  it("preserves decimal precision when specified", () => {
+    const temp = {
+      f: 300,
+      kind: "threshold" as const,
+      precision: "decimal_1" as const,
+      context: "sugar_hard_crack",
+    };
+    expect(renderTemperature(temp, { unit: "F" })).toBe("300.0°F");
+    expect(renderTemperature(temp, { unit: "C" })).toBe("148.9°C");
+  });
+});
+```
+
+## F.9 Performance notes
+
+The `useMemo` in `NarrativeText` recomputes only when `template`, `temps`, `unit`, or `nerdMode` change. With dozens of steps per card, React batches the unit-toggle re-render and the work is cheap regex plus string concatenation.
+
+Worth doing:
+
+1. Debounce `localStorage` writes if users toggle rapidly.
+2. Avoid running the regex on every render. The `useMemo` does this already.
+3. Consider server-prefetched formatted strings only if profiling shows a real bottleneck.
+
+Not worth doing:
+
+1. Memoizing individual temperature renders; the cache overhead exceeds the work.
+2. Server-side conversion; the client owns the user's unit preference.
+
+---
+
+# G. Eval Harness Structure
+
+## G.1 What we're evaluating
+
+Three layers of correctness, in order of stringency:
+
+1. **Schema correctness.** The output validates against the JSON schema. Binary pass/fail.
+2. **Structural correctness.** Tokens resolve, ranges have endpoints, safety temps are flagged, recipe prose is not republished. Binary pass/fail per rule.
+3. **Cooking correctness.** Temperatures and techniques make sense for the dish. Partly automated, partly human reviewed.
+
+The harness automates layers 1 and 2 fully. Layer 3 combines automated checks, such as sensible temperature ranges by technique, with human review against a fixed eval set.
+
+## G.2 Architecture
+
+```text
+eval/
+├── recipes/
+│   ├── 001-simple-pancakes.json
+│   ├── 002-pasta-carbonara.json
+│   └── ...
+├── expected/
+│   ├── 001-simple-pancakes.rules.json
+│   └── ...
+├── runners/
+│   ├── run-eval.ts
+│   ├── schema-validator.ts
+│   ├── structural-checker.ts
+│   └── cooking-checker.ts
+├── reports/
+│   ├── 2026-05-19-prompt-v3/
+│   │   ├── summary.json
+│   │   ├── per-recipe.json
+│   │   └── failures.md
+└── snapshots/
+    ├── 2026-05-15-prompt-v2/
+    └── 2026-05-19-prompt-v3/
+```
+
+Every run produces a timestamped, prompt-version-tagged report directory. Reports are checked into git so regressions are visible in diffs.
+
+## G.3 The recipe input format
+
+Each test recipe is a JSON file containing the input to the AI plus metadata.
+
+```json
+{
+  "id": "002-pasta-carbonara",
+  "name": "Pasta Carbonara",
+  "category": "multi_phase",
+  "difficulty_class": "medium",
+  "expected_features": ["multiple_techniques", "egg_safety", "stainless_pan"],
+  "input": {
+    "recipe_title": "Pasta Carbonara",
+    "source_url": "https://example.com/carbonara",
+    "source_domain": "example.com",
+    "ingredients": [
+      "1 lb spaghetti",
+      "6 oz guanciale or pancetta, diced",
+      "4 large egg yolks",
+      "1 whole egg",
+      "1 cup grated Pecorino Romano",
+      "Freshly cracked black pepper"
+    ],
+    "instructions": [
+      "Bring a large pot of salted water to a boil. Cook pasta until al dente.",
+      "Meanwhile, render guanciale in a stainless skillet over medium heat until crisp.",
+      "In a bowl, whisk eggs, yolks, cheese, and pepper.",
+      "Drain pasta, reserving 1 cup of pasta water. Add pasta to skillet off heat.",
+      "Pour egg mixture over pasta, tossing constantly. Add pasta water as needed to create a creamy sauce."
+    ],
+    "user_context": {
+      "pan_type": "stainless",
+      "pan_size": "12-inch",
+      "experience_level": "comfortable",
+      "cooking_goal": "render_and_emulsify",
+      "preferred_temp_unit": "F"
+    }
+  }
+}
+```
+
+## G.4 The expected-rules format
+
+Each recipe has a corresponding rules file specifying what must be true of the output. These are rules, not literal expected outputs.
+
+```json
+{
+  "id": "002-pasta-carbonara",
+  "schema_validation": "required",
+  "rules": [
+    {
+      "id": "no_plain_text_temps",
+      "description": "No narrative_template field contains a plain-text temperature",
+      "type": "no_match",
+      "field": "**.narrative_template",
+      "pattern": "\\d+\\s*°?\\s*[FC]\\b",
+      "severity": "critical"
+    },
+    {
+      "id": "all_tokens_resolved",
+      "description": "Every {{temp_n}} token has a matching entry in temps",
+      "type": "tokens_resolved",
+      "severity": "critical"
+    },
+    {
+      "id": "safety_temp_present",
+      "description": "Food safety section is applicable and includes egg internal temp",
+      "type": "field_equals",
+      "field": "food_safety.applicable",
+      "value": true,
+      "severity": "high"
+    },
+    {
+      "id": "safety_temp_both_units",
+      "description": "Egg safety temperature uses force_both_units",
+      "type": "temp_attribute",
+      "context_match": "internal_egg",
+      "attribute": "force_both_units",
+      "value": true,
+      "severity": "critical"
+    },
+    {
+      "id": "render_temp_sensible",
+      "description": "Render guanciale temp should be 275-340°F",
+      "type": "temp_range_check",
+      "context_match": "render_guanciale",
+      "f_min": 275,
+      "f_max": 340,
+      "severity": "medium"
+    },
+    {
+      "id": "no_recipe_prose_copy",
+      "description": "Output does not contain verbatim original instruction text",
+      "type": "similarity_check",
+      "max_similarity": 0.4,
+      "severity": "critical"
+    }
+  ]
+}
+```
+
+The rule types are extensible. Adding a new rule type is a small change to the structural checker.
+
+## G.5 The runner
+
+The runner writes `summary.json`, `per-recipe.json`, `failures.md`, checks regressions against the latest snapshot, and exits non-zero on critical failures.
+
+```ts
+// eval/runners/run-eval.ts
+import fs from "fs/promises";
+import path from "path";
+import { callAdaptationAPI } from "./api-client";
+import { checkCooking } from "./cooking-checker";
+import { validateSchema } from "./schema-validator";
+import { checkStructure } from "./structural-checker";
+
+async function runEval(promptVersion: string) {
+  const recipesDir = path.join(__dirname, "..", "recipes");
+  const rulesDir = path.join(__dirname, "..", "expected");
+  const reportsDir = path.join(
+    __dirname,
+    "..",
+    "reports",
+    `${new Date().toISOString().split("T")[0]}-${promptVersion}`
+  );
+
+  await fs.mkdir(reportsDir, { recursive: true });
+  const results = [];
+
+  for (const file of await fs.readdir(recipesDir)) {
+    if (!file.endsWith(".json")) continue;
+
+    const recipe = JSON.parse(
+      await fs.readFile(path.join(recipesDir, file), "utf-8")
+    );
+    const rules = JSON.parse(
+      await fs.readFile(
+        path.join(rulesDir, file.replace(".json", ".rules.json")),
+        "utf-8"
+      )
+    );
+
+    const start = Date.now();
+    const output = await callAdaptationAPI(recipe.input, promptVersion);
+    const duration_ms = Date.now() - start;
+
+    const schema = validateSchema(output);
+    const rule_results = checkStructure(output, rules);
+    const cooking_checks = checkCooking(output, recipe, rules);
+
+    results.push({
+      recipe_id: recipe.id,
+      prompt_version: promptVersion,
+      timestamp: new Date().toISOString(),
+      schema_valid: schema.valid,
+      schema_errors: schema.errors,
+      rule_results,
+      cooking_checks,
+      raw_output: output,
+      duration_ms,
+    });
+  }
+
+  const summary = computeSummary(results);
+  await fs.writeFile(
+    path.join(reportsDir, "summary.json"),
+    JSON.stringify(summary, null, 2)
+  );
+  await fs.writeFile(
+    path.join(reportsDir, "per-recipe.json"),
+    JSON.stringify(results, null, 2)
+  );
+  await fs.writeFile(path.join(reportsDir, "failures.md"), formatFailures(results));
+  await checkRegression(results);
+
+  if (summary.critical_failures > 0) process.exit(1);
+}
+```
+
+## G.6 The structural checker
+
+The structural checker handles the rule types defined in the rules format.
+
+```ts
+// eval/runners/structural-checker.ts
+interface Rule {
+  id: string;
+  description: string;
+  type: string;
+  severity: "critical" | "high" | "medium" | "low";
+  [key: string]: unknown;
+}
+
+export function checkStructure(output: unknown, rules: { rules: Rule[] }) {
+  return rules.rules.map((rule) => runRule(output, rule));
+}
+
+function runRule(output: unknown, rule: Rule) {
+  switch (rule.type) {
+    case "no_match":
+      return checkNoMatch(output, rule);
+    case "tokens_resolved":
+      return checkTokensResolved(output, rule);
+    case "field_equals":
+      return checkFieldEquals(output, rule);
+    case "field_in_set":
+      return checkFieldInSet(output, rule);
+    case "temp_attribute":
+      return checkTempAttribute(output, rule);
+    case "technique_present":
+      return checkTechniquePresent(output, rule);
+    case "step_with_context":
+      return checkStepWithContext(output, rule);
+    case "temp_range_check":
+      return checkTempRange(output, rule);
+    case "similarity_check":
+      return checkSimilarity(output, rule);
+    default:
+      return {
+        rule_id: rule.id,
+        passed: false,
+        severity: rule.severity,
+        details: `Unknown rule type: ${rule.type}`,
+      };
+  }
+}
+```
+
+Core checks:
+
+1. `no_match` collects all matching fields and fails if a regex matches any of them.
+2. `tokens_resolved` verifies every token in each `narrative_template` has a matching key in the adjacent `temps` object, and that there are no unused temps.
+3. `temp_attribute` and `temp_range_check` traverse all `temps` dictionaries and inspect matching `context` values.
+4. `similarity_check` compares each `narrative_template` against original instructions using token-overlap/Jaccard similarity.
+
+For production, use a real JSONPath library instead of hand-rolled `**.field` traversal.
+
+## G.7 The eval set
+
+Minimum viable corpus: 30 recipes, distributed across difficulty classes.
+
+Simple single-technique:
+
+1. Buttermilk pancakes.
+2. Grilled cheese.
+3. Fried eggs over easy.
+4. Pan-seared salmon fillet.
+5. Sauteed garlic in olive oil.
+
+Multi-phase:
+
+1. Pasta carbonara.
+2. Beef stir-fry.
+3. Mushroom risotto.
+4. Tomato sauce from scratch.
+5. French onion soup base.
+
+Protein-heavy:
+
+1. Reverse-seared ribeye.
+2. Roast chicken thighs with stovetop start.
+3. Pork tenderloin medallions.
+4. Pan-fried tilapia.
+5. Shrimp scampi.
+
+High-risk:
+
+1. Caramel for flan.
+2. Deep-fried chicken thighs.
+3. Hollandaise sauce.
+4. Tempering chocolate.
+5. Creme anglaise.
+
+Vague instruction:
+
+1. Scrambled eggs with only "cook until done."
+2. Recipe with "medium heat" repeated throughout.
+3. Recipe with no temperature mentions.
+4. Recipe with conflicting cues.
+5. Recipe written in metaphor.
+
+Non-U.S. recipes:
+
+1. BBC Good Food shepherd's pie.
+2. Australian lamington base.
+3. French confit, stovetop portion.
+4. Japanese tonkatsu.
+5. Italian risotto al nero.
+
+Each gets an input JSON file and a rules JSON file. Thirty recipes is small enough to run in one batch and large enough to catch the common regressions.
+
+## G.8 Running the eval
+
+```bash
+npm run eval -- --prompt-version=v3.2-decimal-precision
+npm run eval -- --prompt-version=production --notify-slack
+```
+
+A prompt-change PR should include:
+
+1. The prompt change itself.
+2. The eval report showing pass rates before and after.
+3. Any new test recipes added for the new behavior.
+
+Prompt changes that drop critical pass rates below 100% do not ship.
+
+## G.9 The human review loop
+
+Layer 3 is partially automated via `temp_range_check`, but full coverage requires human review. The harness supports this with a `requires_review.json` file per report.
+
+Selection criteria:
+
+1. Any output with `confidence_level === "low"`.
+2. Any output where allowed temperature ranges are especially wide.
+3. A random 10% sample of all outputs.
+
+Reviewer outcomes are `accept`, `accept_with_notes`, or `reject`. Rejections become new test rules. This is how the harness grows: every human-detected issue becomes an automated check.
+
+## G.10 What the eval gives you
+
+Immediate value:
+
+1. Confidence to deploy prompt changes.
+2. A data set for possible fine-tuning once you have 100+ verified recipes.
+3. A communicable quality signal for partners, investors, and contributors.
+
+What's still missing:
+
+1. The eval set needs to grow with the product. Thirty recipes is the minimum for Stage 3; Stage 5 should be 100+.
+2. Human review is real work. Plan for 2-3 hours per week of cooking-domain review and rule conversion.
+3. The rendering layer needs design-partner review. The conversion preview can be correct in code and still feel wrong in use.
+
+You now have the complete end-to-end system: a token schema the AI can reliably produce, prompt engineering and eval infrastructure to keep it producing, a rendering layer that consumes it cleanly, a database schema that captures structured feedback, and an admin workflow that turns feedback into recommendations.
