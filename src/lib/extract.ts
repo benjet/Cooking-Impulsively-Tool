@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { ExtractedRecipe } from "./options";
+import { withExtractionMetadata } from "./recipeAnalysis";
 
 type LdNode = Record<string, unknown> | LdNode[];
 
@@ -34,13 +35,13 @@ export async function extractRecipeFromUrl(url: string): Promise<ExtractResult> 
   if (recipeNode) {
     const recipe = nodeToRecipe(recipeNode, $, url);
     if (recipe && recipe.ingredients.length && recipe.instructions.length) {
-      return { ok: true, recipe };
+      return { ok: true, recipe: withExtractionMetadata(recipe, "json-ld") };
     }
   }
 
   const micro = parseMicrodata($, url);
   if (micro && micro.ingredients.length && micro.instructions.length) {
-    return { ok: true, recipe: micro };
+    return { ok: true, recipe: withExtractionMetadata(micro, "microdata") };
   }
 
   return { ok: false, reason: "no_recipe_found" };
@@ -94,7 +95,10 @@ function nodeToRecipe(
   node: Record<string, unknown>,
   $: cheerio.CheerioAPI,
   sourceUrl: string
-): ExtractedRecipe | null {
+): Omit<
+  ExtractedRecipe,
+  "detectedStovetopSteps" | "extractionConfidence"
+> | null {
   const title = asString(node["name"]) ?? "";
   const yieldText = firstString(node["recipeYield"]);
 
@@ -168,7 +172,10 @@ function parseInstructions(raw: unknown): string[] {
 function parseMicrodata(
   $: cheerio.CheerioAPI,
   sourceUrl: string
-): ExtractedRecipe | null {
+): Omit<
+  ExtractedRecipe,
+  "detectedStovetopSteps" | "extractionConfidence"
+> | null {
   const root = $('[itemtype*="schema.org/Recipe"]').first();
   if (!root.length) return null;
   const title =

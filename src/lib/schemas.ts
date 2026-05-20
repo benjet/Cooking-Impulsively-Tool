@@ -12,6 +12,8 @@ export const extractedRecipeSchema = z.object({
   yieldText: z.string().nullable(),
   ingredients: z.array(z.string().min(1)).min(1),
   instructions: z.array(z.string().min(1)).min(1),
+  detectedStovetopSteps: z.array(z.boolean()).default([]),
+  extractionConfidence: z.number().min(0).max(1).default(0.3),
 });
 
 export const cookingContextSchema = z.object({
