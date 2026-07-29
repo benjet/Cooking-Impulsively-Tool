@@ -1,4 +1,11 @@
+"use client";
+
 import type { AdaptationCard } from "@/lib/options";
+import { getDeviceProfileOrDefault, modeLabel } from "@/lib/devices";
+import { renderTemperature } from "@/lib/temperature";
+import { useUnit } from "@/contexts/UnitContext";
+import { NarrativeText } from "./NarrativeText";
+import { UnitToggle } from "./UnitToggle";
 
 type Props = {
   title: string;
@@ -13,12 +20,27 @@ type Props = {
 
 export function CardView(props: Props) {
   const { adaptation: a } = props;
+  const { unit } = useUnit();
+  const device = getDeviceProfileOrDefault(a.deviceProfileId);
+
+  // Nerd mode shows both units at once (PRD_V2 section 14).
+  const nerdMode = props.experience.toLowerCase().includes("nerd");
+
+  const settingTemp = a.settingTokenKey ? a.temps[a.settingTokenKey] : undefined;
+  const settingLabel = settingTemp
+    ? renderTemperature(settingTemp, { unit, nerdMode, device })
+    : a.powerLevel !== null
+    ? `Power ${a.powerLevel}/10`
+    : "—";
 
   return (
     <article className="space-y-6">
       <header className="space-y-2">
-        <div className="text-xs uppercase tracking-wider text-impulse-700">
-          Impulse adaptation card
+        <div className="flex items-start justify-between gap-4">
+          <div className="text-xs uppercase tracking-wider text-impulse-700">
+            {device.manufacturer} adaptation card
+          </div>
+          <UnitToggle />
         </div>
         <h1 className="text-3xl font-bold text-stone-900">{props.title}</h1>
         <div className="flex flex-wrap gap-3 text-sm text-stone-600">
@@ -27,9 +49,9 @@ export function CardView(props: Props) {
               href={props.sourceUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-impulse-700 hover:underline"
+              className="text-impulse-700 hover:underline font-medium"
             >
-              View original recipe →
+              Open the original recipe →
             </a>
           ) : null}
           {props.sourceName && <span>at {props.sourceName}</span>}
@@ -39,17 +61,12 @@ export function CardView(props: Props) {
 
       <div className="rounded-lg border border-stone-200 bg-white p-5 space-y-4">
         <div className="grid sm:grid-cols-3 gap-4">
-          <StatTile label="Impulse mode" value={a.impulseMode} accent />
           <StatTile
-            label="Temperature"
-            value={
-              a.tempRangeF
-                ? `${a.tempRangeF.min}–${a.tempRangeF.max}°F`
-                : a.powerLevel
-                ? `Power ${a.powerLevel}/10`
-                : "—"
-            }
+            label={modeLabel(device, "temperature_control")}
+            value={a.impulseMode}
+            accent
           />
+          <StatTile label="Setting" value={settingLabel} />
           <StatTile
             label="Confidence"
             value={a.confidence}
@@ -63,10 +80,24 @@ export function CardView(props: Props) {
           />
         </div>
 
-        <p className="text-stone-700">{a.rationale}</p>
+        <p className="text-stone-700">
+          <NarrativeText
+            template={a.rationale}
+            temps={a.temps}
+            nerdMode={nerdMode}
+            device={device}
+          />
+        </p>
 
         <Section title="Timing">
-          <p>{a.timingNotes}</p>
+          <p>
+            <NarrativeText
+              template={a.timingNotes}
+              temps={a.temps}
+              nerdMode={nerdMode}
+              device={device}
+            />
+          </p>
         </Section>
 
         <Section title="What to look for">
@@ -77,24 +108,29 @@ export function CardView(props: Props) {
 
         {a.panCautions.length > 0 && (
           <Section title={`Pan notes — ${props.panType}`}>
-            <ul className="list-disc list-inside space-y-1">
-              {a.panCautions.map((c, i) => (
-                <li key={i}>{c}</li>
-              ))}
-            </ul>
+            <TemplateList
+              items={a.panCautions}
+              temps={a.temps}
+              nerdMode={nerdMode}
+              deviceId={a.deviceProfileId}
+            />
           </Section>
         )}
 
         <Section title="Safety">
-          <ul className="list-disc list-inside space-y-1">
-            {a.safetyReminders.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
+          {/* Food-safety figures always render in both units regardless of the
+              toggle, so this list is intentionally not device-clamped. */}
+          <TemplateList
+            items={a.safetyReminders}
+            temps={a.temps}
+            nerdMode={nerdMode}
+            deviceId={a.deviceProfileId}
+          />
         </Section>
 
         <Section title="Your context">
           <div className="flex flex-wrap gap-2 text-sm">
+            <Pill>{device.model}</Pill>
             <Pill>{props.panType}</Pill>
             <Pill>{props.experience}</Pill>
             <Pill>{props.goal}</Pill>
@@ -102,6 +138,34 @@ export function CardView(props: Props) {
         </Section>
       </div>
     </article>
+  );
+}
+
+function TemplateList({
+  items,
+  temps,
+  nerdMode,
+  deviceId,
+}: {
+  items: string[];
+  temps: AdaptationCard["temps"];
+  nerdMode: boolean;
+  deviceId: string;
+}) {
+  const device = getDeviceProfileOrDefault(deviceId);
+  return (
+    <ul className="list-disc list-inside space-y-1">
+      {items.map((item, i) => (
+        <li key={i}>
+          <NarrativeText
+            template={item}
+            temps={temps}
+            nerdMode={nerdMode}
+            device={device}
+          />
+        </li>
+      ))}
+    </ul>
   );
 }
 

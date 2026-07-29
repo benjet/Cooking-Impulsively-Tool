@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getDb, type CardRow, type CommunityNoteRow } from "@/lib/db";
-import type { AdaptationCard } from "@/lib/options";
+import { normalizeAdaptation } from "@/lib/adaptation";
 import { CardView } from "@/components/CardView";
 import { ShareButton } from "@/components/ShareButton";
 import { Disclaimer } from "@/components/Disclaimer";
@@ -45,7 +45,9 @@ export default async function CardPage({ params, searchParams }: PageProps) {
   const row = loadCard(slug);
   if (!row) notFound();
 
-  const adaptation = JSON.parse(row.adaptation_json) as AdaptationCard;
+  // Rows written before tokenization are upgraded on read rather than
+  // migrated, so an old card still renders.
+  const adaptation = normalizeAdaptation(JSON.parse(row.adaptation_json));
   const notes = loadCommunityNotes(row.id);
 
   return (

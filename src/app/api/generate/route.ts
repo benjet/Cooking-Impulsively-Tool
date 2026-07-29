@@ -41,8 +41,9 @@ export async function POST(req: Request) {
        ingredients_json, instructions_json,
        pan_type, experience, goal, user_notes,
        adaptation_json, created_at,
-       detected_stovetop_steps, extraction_confidence
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       detected_stovetop_steps, extraction_confidence,
+       device_profile_id, device_profile_version
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     slug,
     recipe.title,
@@ -58,7 +59,9 @@ export async function POST(req: Request) {
     JSON.stringify(adaptation),
     Date.now(),
     JSON.stringify(recipe.detectedStovetopSteps),
-    recipe.extractionConfidence
+    recipe.extractionConfidence,
+    adaptation.deviceProfileId,
+    adaptation.deviceProfileVersion
   );
 
   return NextResponse.json({ slug });
