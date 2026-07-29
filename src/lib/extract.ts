@@ -1,50 +1,121 @@
 import * as cheerio from "cheerio";
 import type { ExtractedRecipe } from "./options";
-import { withExtractionMetadata } from "./recipeAnalysis";
+import { contentHash, withExtractionMetadata } from "./recipeAnalysis";
+import {
+  safeFetchHtml,
+  UnsafeUrlError,
+  assertSafeUrl,
+  type UrlRejection,
+} from "./urlSafety";
 
 type LdNode = Record<string, unknown> | LdNode[];
 
+/** What a parser produces before derived and provenance fields are attached. */
+type CoreRecipe = Omit<
+  ExtractedRecipe,
+  | "detectedStovetopSteps"
+  | "extractionConfidence"
+  | "extractionMethod"
+  | "canonicalUrl"
+  | "contentHash"
+>;
+
+// Identifies the tool honestly rather than impersonating a browser. Publishers
+// who want to see or block this traffic should be able to.
 const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+  "CookingImpulsivelyBot/0.1 (+https://github.com/benjet/Cooking-Impulsively-Tool; independent recipe adaptation)";
+
+export type ExtractFailure = UrlRejection | "no_recipe_found";
 
 export type ExtractResult =
   | { ok: true; recipe: ExtractedRecipe }
-  | { ok: false; reason: "fetch_failed" | "no_recipe_found" };
+  | { ok: false; reason: ExtractFailure };
 
 export async function extractRecipeFromUrl(url: string): Promise<ExtractResult> {
   let html: string;
+  let finalUrl: string;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "text/html,*/*" },
-      signal: controller.signal,
-      redirect: "follow",
-    });
-    clearTimeout(timeout);
-    if (!res.ok) return { ok: false, reason: "fetch_failed" };
-    html = await res.text();
-  } catch {
+    const result = await safeFetchHtml(url, UA);
+    html = result.html;
+    finalUrl = result.finalUrl;
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) return { ok: false, reason: err.reason };
     return { ok: false, reason: "fetch_failed" };
   }
 
   const $ = cheerio.load(html);
+  // Attribute to the page's declared canonical URL where it has one, so two
+  // submissions of the same recipe through different links converge.
+  const canonicalUrl = readCanonicalUrl($, finalUrl);
 
   const jsonLd = collectJsonLd($);
   const recipeNode = findRecipeNode(jsonLd);
   if (recipeNode) {
-    const recipe = nodeToRecipe(recipeNode, $, url);
+    const recipe = nodeToRecipe(recipeNode, $, finalUrl);
     if (recipe && recipe.ingredients.length && recipe.instructions.length) {
-      return { ok: true, recipe: withExtractionMetadata(recipe, "json-ld") };
+      return {
+        ok: true,
+        recipe: withExtractionMetadata(
+          {
+            ...recipe,
+            canonicalUrl,
+            contentHash: contentHash(recipe.ingredients, recipe.instructions),
+          },
+          "json-ld"
+        ),
+      };
     }
   }
 
-  const micro = parseMicrodata($, url);
+  const micro = parseMicrodata($, finalUrl);
   if (micro && micro.ingredients.length && micro.instructions.length) {
-    return { ok: true, recipe: withExtractionMetadata(micro, "microdata") };
+    return {
+      ok: true,
+      recipe: withExtractionMetadata(
+        {
+          ...micro,
+          canonicalUrl,
+          contentHash: contentHash(micro.ingredients, micro.instructions),
+        },
+        "microdata"
+      ),
+    };
   }
 
   return { ok: false, reason: "no_recipe_found" };
+}
+
+/**
+ * Prefer the page's declared canonical URL, then og:url, then the URL we
+ * actually landed on. A declared canonical is only trusted when it is itself
+ * a safe public URL — a page must not be able to point attribution at an
+ * internal host.
+ */
+export function readCanonicalUrl(
+  $: cheerio.CheerioAPI,
+  fallbackUrl: string
+): string | null {
+  const candidates = [
+    $('link[rel="canonical"]').attr("href"),
+    $('meta[property="og:url"]').attr("content"),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const resolved = new URL(candidate, fallbackUrl).toString();
+      assertSafeUrl(resolved);
+      return resolved;
+    } catch {
+      // Unsafe or unparseable canonical; fall through to the next candidate.
+    }
+  }
+
+  try {
+    return assertSafeUrl(fallbackUrl).toString();
+  } catch {
+    return null;
+  }
 }
 
 function collectJsonLd($: cheerio.CheerioAPI): LdNode[] {
@@ -95,10 +166,7 @@ function nodeToRecipe(
   node: Record<string, unknown>,
   $: cheerio.CheerioAPI,
   sourceUrl: string
-): Omit<
-  ExtractedRecipe,
-  "detectedStovetopSteps" | "extractionConfidence"
-> | null {
+): CoreRecipe | null {
   const title = asString(node["name"]) ?? "";
   const yieldText = firstString(node["recipeYield"]);
 
@@ -172,10 +240,7 @@ function parseInstructions(raw: unknown): string[] {
 function parseMicrodata(
   $: cheerio.CheerioAPI,
   sourceUrl: string
-): Omit<
-  ExtractedRecipe,
-  "detectedStovetopSteps" | "extractionConfidence"
-> | null {
+): CoreRecipe | null {
   const root = $('[itemtype*="schema.org/Recipe"]').first();
   if (!root.length) return null;
   const title =

@@ -85,6 +85,8 @@ describe("withExtractionMetadata", () => {
     yieldText: "2 servings",
     ingredients: ["1 tbsp butter"],
     instructions: ["Melt the butter in a pan.", "Season to taste."],
+    canonicalUrl: null,
+    contentHash: null,
   };
 
   it("attaches both derived fields without mutating the input", () => {

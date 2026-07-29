@@ -35,6 +35,9 @@ export default function NewCardPage() {
     instructions: [""],
     detectedStovetopSteps: [false],
     extractionConfidence: 0.3,
+    canonicalUrl: null,
+    contentHash: null,
+    extractionMethod: "manual",
   });
 
   const [deviceId, setDeviceId] = useState<string>(DEFAULT_DEVICE_ID);
@@ -64,6 +67,7 @@ export default function NewCardPage() {
           ...r,
           sourceUrl: url || null,
           extractionConfidence: 0.3,
+          extractionMethod: "manual",
         }));
         setStage("confirm");
         return;
@@ -79,6 +83,7 @@ export default function NewCardPage() {
         ...r,
         sourceUrl: url || null,
         extractionConfidence: 0.3,
+        extractionMethod: "manual",
       }));
       setStage("confirm");
     } finally {
@@ -97,6 +102,9 @@ export default function NewCardPage() {
       instructions: [""],
       detectedStovetopSteps: [false],
       extractionConfidence: 0.3,
+      canonicalUrl: null,
+      contentHash: null,
+      extractionMethod: "manual",
     });
     setStage("confirm");
   }

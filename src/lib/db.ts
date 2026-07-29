@@ -73,6 +73,18 @@ function migrate(db: DatabaseSync) {
   addColumnIfMissing(db, "cards", "extraction_confidence", "REAL");
   addColumnIfMissing(db, "cards", "device_profile_id", "TEXT");
   addColumnIfMissing(db, "cards", "device_profile_version", "INTEGER");
+  addColumnIfMissing(db, "cards", "canonical_url", "TEXT");
+  addColumnIfMissing(db, "cards", "content_hash", "TEXT");
+  addColumnIfMissing(db, "cards", "extraction_method", "TEXT");
+
+  // Dedup lookups: the same recipe reached through different URLs shares a
+  // content hash, and the same page shares a canonical URL.
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_cards_content_hash ON cards(content_hash)"
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_cards_canonical ON cards(canonical_url)"
+  );
 }
 
 function addColumnIfMissing(
@@ -116,6 +128,9 @@ export type CardRow = {
   extraction_confidence: number | null;
   device_profile_id: string | null;
   device_profile_version: number | null;
+  canonical_url: string | null;
+  content_hash: string | null;
+  extraction_method: string | null;
 };
 
 export type FeedbackRow = {
