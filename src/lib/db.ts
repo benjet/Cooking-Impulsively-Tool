@@ -71,6 +71,8 @@ function migrate(db: DatabaseSync) {
   // won't backfill them into an existing local database, so add them explicitly.
   addColumnIfMissing(db, "cards", "detected_stovetop_steps", "TEXT");
   addColumnIfMissing(db, "cards", "extraction_confidence", "REAL");
+  addColumnIfMissing(db, "cards", "device_profile_id", "TEXT");
+  addColumnIfMissing(db, "cards", "device_profile_version", "INTEGER");
 }
 
 function addColumnIfMissing(
@@ -112,6 +114,8 @@ export type CardRow = {
   created_at: number;
   detected_stovetop_steps: string | null;
   extraction_confidence: number | null;
+  device_profile_id: string | null;
+  device_profile_version: number | null;
 };
 
 export type FeedbackRow = {

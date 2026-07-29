@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { EXPERIENCE, FEEDBACK_TAGS, GOALS, PAN_TYPES } from "./options";
+import { DEFAULT_DEVICE_ID } from "./devices";
 
 export const extractRequestSchema = z.object({
   url: z.string().url(),
@@ -17,6 +18,7 @@ export const extractedRecipeSchema = z.object({
 });
 
 export const cookingContextSchema = z.object({
+  deviceId: z.string().min(1).default(DEFAULT_DEVICE_ID),
   panType: z.enum(PAN_TYPES),
   experience: z.enum(EXPERIENCE),
   goal: z.enum(GOALS),

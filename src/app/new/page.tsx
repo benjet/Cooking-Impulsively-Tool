@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ListEditor } from "@/components/IngredientEditor";
 import { detectStovetopSteps } from "@/lib/recipeAnalysis";
+import { DEVICE_PROFILES, DEFAULT_DEVICE_ID } from "@/lib/devices";
 import {
   EXPERIENCE,
   GOALS,
@@ -36,6 +37,7 @@ export default function NewCardPage() {
     extractionConfidence: 0.3,
   });
 
+  const [deviceId, setDeviceId] = useState<string>(DEFAULT_DEVICE_ID);
   const [panType, setPanType] = useState<PanType>(PAN_TYPES[0]);
   const [experience, setExperience] = useState<Experience>(EXPERIENCE[1]);
   const [goal, setGoal] = useState<Goal>(GOALS[0]);
@@ -136,6 +138,7 @@ export default function NewCardPage() {
         return;
       }
       const context: CookingContext = {
+        deviceId,
         panType,
         experience,
         goal,
@@ -298,6 +301,20 @@ export default function NewCardPage() {
             This tells us how to tune the Impulse settings to your setup.
           </p>
           {error && <ErrorBox>{error}</ErrorBox>}
+
+          <Field label="Cooktop">
+            <select
+              value={deviceId}
+              onChange={(e) => setDeviceId(e.target.value)}
+              className="w-full rounded border border-stone-300 px-2 py-1.5"
+            >
+              {DEVICE_PROFILES.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.manufacturer} {d.model}
+                </option>
+              ))}
+            </select>
+          </Field>
 
           <Field label="Pan type">
             <select
