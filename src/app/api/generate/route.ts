@@ -42,8 +42,9 @@ export async function POST(req: Request) {
        pan_type, experience, goal, user_notes,
        adaptation_json, created_at,
        detected_stovetop_steps, extraction_confidence,
-       device_profile_id, device_profile_version
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       device_profile_id, device_profile_version,
+       canonical_url, content_hash, extraction_method
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     slug,
     recipe.title,
@@ -61,7 +62,10 @@ export async function POST(req: Request) {
     JSON.stringify(recipe.detectedStovetopSteps),
     recipe.extractionConfidence,
     adaptation.deviceProfileId,
-    adaptation.deviceProfileVersion
+    adaptation.deviceProfileVersion,
+    recipe.canonicalUrl,
+    recipe.contentHash,
+    recipe.extractionMethod
   );
 
   return NextResponse.json({ slug });

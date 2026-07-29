@@ -93,6 +93,11 @@ export type ExtractedRecipe = {
   instructions: string[];
   detectedStovetopSteps: boolean[];
   extractionConfidence: number;
+  /** rel=canonical or og:url when the page declares one; used for dedup. */
+  canonicalUrl: string | null;
+  /** Hash of the functional recipe content, for snapshot dedup. */
+  contentHash: string | null;
+  extractionMethod: "json-ld" | "microdata" | "manual";
 };
 
 export type CookingContext = {

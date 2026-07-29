@@ -15,6 +15,11 @@ export const extractedRecipeSchema = z.object({
   instructions: z.array(z.string().min(1)).min(1),
   detectedStovetopSteps: z.array(z.boolean()).default([]),
   extractionConfidence: z.number().min(0).max(1).default(0.3),
+  canonicalUrl: z.string().nullable().default(null),
+  contentHash: z.string().nullable().default(null),
+  extractionMethod: z
+    .enum(["json-ld", "microdata", "manual"])
+    .default("manual"),
 });
 
 export const cookingContextSchema = z.object({
