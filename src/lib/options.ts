@@ -58,6 +58,8 @@ export type ExtractedRecipe = {
   yieldText: string | null;
   ingredients: string[];
   instructions: string[];
+  detectedStovetopSteps: boolean[];
+  extractionConfidence: number;
 };
 
 export type CookingContext = {

@@ -66,6 +66,24 @@ function migrate(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_feedback_card ON feedback(card_id);
     CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at DESC);
   `);
+
+  // Columns added after the initial schema shipped. CREATE TABLE IF NOT EXISTS
+  // won't backfill them into an existing local database, so add them explicitly.
+  addColumnIfMissing(db, "cards", "detected_stovetop_steps", "TEXT");
+  addColumnIfMissing(db, "cards", "extraction_confidence", "REAL");
+}
+
+function addColumnIfMissing(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  type: string
+) {
+  const existing = db
+    .prepare(`SELECT name FROM pragma_table_info(?)`)
+    .all(table) as { name: string }[];
+  if (existing.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 export function getDb(): DatabaseSync {
@@ -92,6 +110,8 @@ export type CardRow = {
   user_notes: string | null;
   adaptation_json: string;
   created_at: number;
+  detected_stovetop_steps: string | null;
+  extraction_confidence: number | null;
 };
 
 export type FeedbackRow = {

@@ -219,6 +219,71 @@ data/.gitkeep                   # SQLite file lives here at runtime
 7. **Feedback** — `/c/[slug]/feedback/page.tsx`, `POST /api/feedback`, thank-you state.
 8. **Admin** — login, middleware, dashboard with recent/aggregate/notes tabs.
 
+## Stage 3/4 enhancement build spec
+
+The next build should prioritize trust in the generated card before database normalization or public-library work. The sequence is:
+
+1. **Rendering layer first.**
+   - Add `src/contexts/UnitContext.tsx` with `UnitProvider`, `useUnit`, `setUnit`, `toggle`, and `isExplicit`.
+   - Add `src/lib/temperature.ts` with `fToC`, `cToF`, `formatTemp`, and `renderTemperature`.
+   - Add `src/components/NarrativeText.tsx` to resolve `{{temp_n}}` tokens against a `temps` dictionary.
+   - Add `src/components/UnitToggle.tsx` and place it on landing, confirmation, card view, feedback, and admin surfaces.
+   - Update `CardView` so all temperatures render through `NarrativeText`; no component should format Fahrenheit/Celsius directly.
+   - Acceptance: toggling units updates rendered temperatures without calling `/api/generate` again.
+
+2. **Adapt the existing heuristic generator to the token schema.**
+   - Extend `AdaptationCard` in `src/lib/options.ts` to include `summary.narrative_template`, `summary.temps`, and `steps[]`.
+   - Refactor `src/lib/llm.ts` so the heuristic stub emits tokenized templates instead of plain-text temperatures.
+   - Preserve the same exported `generateAdaptation(recipe, context)` interface.
+   - Acceptance: generated cards contain no plain-text temperature strings in narrative fields; every token has a matching `temps` entry.
+
+3. **Food safety layer.**
+   - Add `src/lib/foodSafety.ts` with static USDA temperature guidance and ingredient keyword detection.
+   - Add a dedicated food-safety section in `CardView`.
+   - Food safety temps must set `force_both_units: true`.
+   - Acceptance: chicken, turkey, fish, ground meat, whole-cut meat, eggs, leftovers, and casseroles surface the correct safety guidance in both units.
+
+4. **Feedback conversion and storage.**
+   - Update `FeedbackForm` with an explicit unit selector for the user-entered actual temperature.
+   - Show a conversion preview before submit.
+   - Update the feedback API/schema/database to store `actual_temp_input`, `actual_temp_unit`, `actual_temp_f`, and `actual_temp_c`.
+   - Acceptance: a Celsius submission stores both canonical Fahrenheit and Celsius values, and the preview matches the stored conversion.
+
+5. **Eval harness before real LLM integration.**
+   - Add `eval/recipes`, `eval/expected`, `eval/runners`, `eval/reports`, and `eval/snapshots`.
+   - Start with 5-10 recipes, then grow toward the 30-recipe corpus from `ENGINEERING.md`.
+   - Implement schema validation, token-resolution checks, no-inline-temperature checks, food-safety checks, and no-copied-recipe-prose checks.
+   - Add `npm run eval`.
+   - Acceptance: the heuristic generator passes structural checks before the real model is introduced.
+
+6. **Real model integration.**
+   - Replace the heuristic internals in `src/lib/llm.ts` with Claude/structured-output integration.
+   - Keep a deterministic local fallback when `ANTHROPIC_API_KEY` is absent.
+   - Record `prompt_version` on generated cards.
+   - Acceptance: evals pass at 100% for critical structural rules before the model-backed path ships.
+
+7. **Normalize data after the output shape is stable.**
+   - Split the current `cards` table into recipe source, extraction, adaptation card, adaptation step, feedback, and aggregate-learning tables.
+   - Add versioned migrations under `src/lib/migrations/`.
+   - Backfill existing `cards` rows.
+   - Acceptance: old card URLs still resolve, and all read/write paths use the normalized tables.
+
+8. **Admin and learning loop.**
+   - Add the admin review queue schema from `ENGINEERING.md`.
+   - Add conflict detection and aggregate-learning recomputation.
+   - Add review states for accept/reject/defer and keep append-only decision history.
+   - Acceptance: user feedback can create reviewable suggestions without automatically changing public guidance.
+
+## Enhancement acceptance criteria
+
+1. Unit toggling never regenerates a card.
+2. No user-facing temperature narrative contains raw inline temperatures; all rendered values come from tokens.
+3. Food safety temperatures always show both Fahrenheit and Celsius.
+4. Feedback stores the user's original input unit and normalized values in both units.
+5. Prompt/model changes cannot ship with critical eval failures.
+6. Existing public card URLs continue to work through schema migration.
+7. The admin workflow is review-first; user feedback never auto-promotes to recommendations without review.
+
 ## Verification
 
 1. `npm install && npm run dev` — landing page loads at http://localhost:3000.
