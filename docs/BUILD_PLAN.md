@@ -108,32 +108,34 @@ Phases come from `IMPLEMENTATION_GUIDE.md` §5 and are the GitHub milestones. Th
 
 *No infrastructure. Make the data contracts explicit so later phases have something to migrate.*
 
-- Typed temperature tokens + rendering utilities (`ENGINEERING.md` §F.3) — #1
-- Persistent °F/°C toggle on the card (§F.2, §F.6) — #1
-- Adaptation version + device profile field on stored cards — new
-- Device profile schema + Impulse profile record — new
-- Expanded cooking context: cooking fat, pan size, recipe scaling, desired outcome — new
-- Extraction hardening: SSRF guards, canonical URL, dedup, rate limiting (`IMPLEMENTATION_GUIDE` §7) — new
-- Schema validation on everything stored
-- CI: typecheck, test, build — new
+| Work | Issue |
+|---|---|
+| Typed temperature tokens + rendering utilities + persistent °F/°C toggle (`ENGINEERING.md` §F) | [#1](https://github.com/benjet/Cooking-Impulsively-Tool/issues/1) |
+| Stovetop-step detection + extraction confidence | [#5](https://github.com/benjet/Cooking-Impulsively-Tool/issues/5) (PR #11) |
+| Device profile schema + Impulse profile record | [#13](https://github.com/benjet/Cooking-Impulsively-Tool/issues/13) |
+| Adaptation versioning + prompt/model stamping | [#14](https://github.com/benjet/Cooking-Impulsively-Tool/issues/14) |
+| Expanded cooking context: fat, pan size, scaling, desired outcome | [#15](https://github.com/benjet/Cooking-Impulsively-Tool/issues/15) |
+| Extraction hardening: SSRF, canonical URL, dedup, rate limiting | [#16](https://github.com/benjet/Cooking-Impulsively-Tool/issues/16) |
+| CI: typecheck, test, build | [#17](https://github.com/benjet/Cooking-Impulsively-Tool/issues/17) |
 
 **Done when:** the app runs locally with explicit versioned data contracts, temperatures are tokens end to end, and CI is green on every PR.
 
 ### Phase B — Production database and auth
 
-- Supabase project, client/server helpers, migrations — #6 (rewritten)
-- Full §6 + §E schema
-- Anonymous sessions, passwordless email linking on save — new
-- Row Level Security on user-owned records
-- Migrate existing tables; service-role key server-side only
-- Analytics events + error monitoring — new
+| Work | Issue |
+|---|---|
+| Supabase project, migrations, full 15-table schema, RLS | [#6](https://github.com/benjet/Cooking-Impulsively-Tool/issues/6) |
+| Anonymous sessions with passwordless account linking | [#18](https://github.com/benjet/Cooking-Impulsively-Tool/issues/18) |
+| Analytics events + error monitoring | [#19](https://github.com/benjet/Cooking-Impulsively-Tool/issues/19) |
 
 **Done when:** data persists in Postgres across preview and production, users have identity without a registration wall, and RLS is enforced.
 
 ### Phase C — Background jobs
 
-- Trigger.dev setup, `extract-recipe` and `generate-adaptation` jobs, retries, timeouts, job-status fields, user-facing processing states — new
-- Scheduled backlink health checks + admin view — new
+| Work | Issue |
+|---|---|
+| Trigger.dev setup, `extract-recipe` + `generate-adaptation` jobs, retries, processing states | [#20](https://github.com/benjet/Cooking-Impulsively-Tool/issues/20) |
+| Scheduled backlink health checks + admin view | [#21](https://github.com/benjet/Cooking-Impulsively-Tool/issues/21) |
 
 **Done when:** extraction and generation no longer block a request, and failures retry visibly instead of silently.
 
@@ -141,37 +143,41 @@ Phases come from `IMPLEMENTATION_GUIDE.md` §5 and are the GitHub milestones. Th
 
 The hard one. `ENGINEERING.md` §D and §G exist entirely to serve this phase.
 
-- Golden eval set: 30 recipes + rules + harness (§G) — new. **Build this first.** §D.7 and §G are explicit that no token-emission code should be written before the eval set exists, because the prompt needs 5–10 iterations and there is otherwise no way to detect regression.
-- Provider-agnostic AI interface with Anthropic + OpenAI + heuristic implementations — #2 (rewritten)
-- Device-neutral plan → device adapter architecture — new
-- Per-step adaptation output — #3
-- Food safety: distinguish pan-surface / liquid / oil / internal temperature; both units always — #4
-- Prompt version, model snapshot, device profile version stamped on every adaptation
-- Safety validation before publication
+| Work | Issue |
+|---|---|
+| **Golden eval set: 30 recipes + rules + harness (§G). Build this first.** | [#22](https://github.com/benjet/Cooking-Impulsively-Tool/issues/22) |
+| Provider-agnostic AI interface: Anthropic + OpenAI + heuristic | [#2](https://github.com/benjet/Cooking-Impulsively-Tool/issues/2) |
+| Device-neutral plan → device adapter architecture | [#23](https://github.com/benjet/Cooking-Impulsively-Tool/issues/23) |
+| Per-step adaptation output | [#3](https://github.com/benjet/Cooking-Impulsively-Tool/issues/3) |
+| Food safety: pan-surface / liquid / oil / internal, both units always | [#4](https://github.com/benjet/Cooking-Impulsively-Tool/issues/4) |
+
+§D.7 and §G are explicit that no token-emission code should be written before the eval set exists — the prompt needs 5–10 iterations and there is otherwise no way to detect regression.
 
 **Done when:** a real recipe produces versioned per-step device-specific guidance, the eval set passes 100% of critical rules, and the provider decision from §2.1 is made on data.
 
 ### Phase E — Feedback and the cooking journal
 
-- `cook_sessions` + `step_feedback` tables; "I cooked this" gating — new
-- Feedback rewrite: actual temp + unit, pan, fat, timing, adjustments, versioned attachment — new
-- Personal cooking journal + previous-settings display on revisit — new
-- Community insights with moderation thresholds (`PRD_V2` §17) — #7 (rewritten)
+| Work | Issue |
+|---|---|
+| Completed-cook gating; `cook_sessions` + `step_feedback`; feedback rewrite | [#24](https://github.com/benjet/Cooking-Impulsively-Tool/issues/24) |
+| Personal cooking journal + previous-settings recall | [#25](https://github.com/benjet/Cooking-Impulsively-Tool/issues/25) |
+| Community insights with moderation thresholds (`PRD_V2` §17) | [#7](https://github.com/benjet/Cooking-Impulsively-Tool/issues/7) |
 
 **Done when:** only completed cooks generate evidence, that evidence attaches to an exact adaptation version, and returning users see what they did last time.
 
 ### Phase F — Breville Control Freak
 
-- Home and Commercial device profiles — new
-- Surface temperature, heat intensity, probe control/monitoring, preset-ready sequences
-- Control Freak context fields; feedback segmented by device and model
-- Same eval recipes run through both adapters
+| Work | Issue |
+|---|---|
+| Home + Commercial profiles, surface temp, intensity, probe control/monitoring, preset-ready sequences, device-segmented feedback | [#26](https://github.com/benjet/Cooking-Impulsively-Tool/issues/26) |
 
 **Done when:** the same recipe yields correct, differently-shaped guidance on Impulse and Control Freak without forking the analysis engine.
 
 ### Later — not milestoned
 
-Public adaptation library (#8) and community/social features (#9) come after the loop above is validated. `IMPLEMENTATION_GUIDE.md` §18 is right that these are premature until real cooks confirm the recommendations survive contact with real pans.
+Public adaptation library ([#8](https://github.com/benjet/Cooking-Impulsively-Tool/issues/8)) and community/social features ([#9](https://github.com/benjet/Cooking-Impulsively-Tool/issues/9)) come after the loop above is validated. `IMPLEMENTATION_GUIDE.md` §18 is right that these are premature until real cooks confirm the recommendations survive contact with real pans.
+
+Tracking lives in the [GitHub milestones](https://github.com/benjet/Cooking-Impulsively-Tool/milestones), one per phase.
 
 ---
 
