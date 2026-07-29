@@ -3,6 +3,7 @@ import { generateRequestSchema } from "@/lib/schemas";
 import { generateAdaptation } from "@/lib/llm";
 import { getDb } from "@/lib/db";
 import { newSlug } from "@/lib/slug";
+import { detectStovetopSteps } from "@/lib/recipeAnalysis";
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
@@ -14,7 +15,22 @@ export async function POST(req: Request) {
     );
   }
 
-  const { recipe, context } = parsed.data;
+  const { context } = parsed.data;
+
+  // Never trust client-supplied derived metadata. Stovetop detection is a pure
+  // function of the instructions, so recompute it from what was actually
+  // submitted rather than accepting whatever the request body claimed.
+  //
+  // extractionConfidence is left as-received because it describes extraction
+  // provenance, which the server cannot verify at generation time — the client
+  // may legitimately have edited every step since. It becomes server-authored
+  // in Phase C, when extraction moves into a background job that persists its
+  // own snapshot. Until then, treat it as advisory.
+  const recipe = {
+    ...parsed.data.recipe,
+    detectedStovetopSteps: detectStovetopSteps(parsed.data.recipe.instructions),
+  };
+
   const adaptation = await generateAdaptation(recipe, context);
 
   const db = getDb();
@@ -24,8 +40,9 @@ export async function POST(req: Request) {
        slug, title, source_name, source_url, yield_text,
        ingredients_json, instructions_json,
        pan_type, experience, goal, user_notes,
-       adaptation_json, created_at
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       adaptation_json, created_at,
+       detected_stovetop_steps, extraction_confidence
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(
     slug,
     recipe.title,
@@ -39,7 +56,9 @@ export async function POST(req: Request) {
     context.goal,
     context.userNotes ?? null,
     JSON.stringify(adaptation),
-    Date.now()
+    Date.now(),
+    JSON.stringify(recipe.detectedStovetopSteps),
+    recipe.extractionConfidence
   );
 
   return NextResponse.json({ slug });
