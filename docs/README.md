@@ -4,6 +4,16 @@ This directory contains the current product and implementation documentation for
 
 ## Current documents
 
+### [Build Plan](./BUILD_PLAN.md)
+
+The execution layer and the only status-tracking document. Sequences the work into engineering phases A–F, records locked decisions, and resolves the contradictions between the specification documents:
+
+- Honest current-state baseline of the codebase
+- AI provider decision (agnostic interface, decided by eval)
+- Database decision (Supabase PostgreSQL)
+- Schema reconciliation between `IMPLEMENTATION_GUIDE.md` §6 and `ENGINEERING.md` §E
+- Phase-to-PRD-stage mapping and per-phase definitions of done
+
 ### [Product Requirements Document v0.2](./PRD_V2.md)
 
 The consolidated product definition, including:
@@ -57,5 +67,8 @@ The files in this directory do not remove those documents. They consolidate the 
 1. `docs/RESEARCH_AND_VALIDATION.md`
 2. `docs/PRD_V2.md`
 3. `docs/IMPLEMENTATION_GUIDE.md`
-4. `ENGINEERING.md`
-5. `PLAN.md`
+4. `docs/BUILD_PLAN.md`
+5. `ENGINEERING.md`
+6. `PLAN.md`
+
+`PLAN.md` and the Stage 0–6 roadmap in `PRD.md` describe the original Impulse-only MVP and are superseded by `docs/BUILD_PLAN.md`. They are kept for history.
